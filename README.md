@@ -5,7 +5,7 @@ O CoProcessador tem a função definida de receber uma imagem de um número, den
 
 O driver consiste em um arquivo .s (Código em Assembly), um arquivo .h (Arquivo de definição dos registradores) e um .c (Importação do programa e visualização das saídas).
 
-A Controladora VGA de Maike, tem a função de receber dados de entrada específicos de sua configuração, e retornar, no VGA, uma saída visual, dentro da resolução previamente limitada.
+A Controladora VGA de Maike tem a função de receber dados de entrada específicos de sua configuração, e retornar, no VGA, uma saída visual, dentro da resolução previamente limitada.
 
 A Aplicação consiste em um .c (Ligação entre Driver e Controladora VGA), além de seus outros arquivos necessários.
 
