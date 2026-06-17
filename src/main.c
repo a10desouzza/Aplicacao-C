@@ -9,6 +9,8 @@
 #include <dirent.h>
 #include <time.h>
 #include <math.h>
+#include <termios.h>
+#include <sys/select.h>
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
@@ -58,15 +60,13 @@ static int   g_fd   = -1;
 
 /* ===================== Camada VGA ===================== */
 
-/* Empacotamento conforme o ghrd_top.v:
- *   posy[28:19] | posx[18:9] | red[8:6] | green[5:3] | blue[1:0]
- * (azul usa apenas 2 bits no hardware - RGB 3-3-2). */
+/* Empacotamento conforme o ghrd_top.v. */
 static uint32_t pack_pixel(int x, int y, int r, int g, int b) {
     return ((uint32_t)(y & 0x3FF) << 19)
          | ((uint32_t)(x & 0x3FF) << 9)
-         | ((uint32_t)(r & 0x7)   << 6)
-         | ((uint32_t)(g & 0x7)   << 3)
-         | ((uint32_t)((b >> 1) & 0x3));   /* azul 2 bits: 0..7 -> 0..3 */
+         | ((uint32_t)(r & 0x7) << 6)        
+         | ((uint32_t)(g & 0x7) << 3)        
+         | ((uint32_t)(b & 0x7));            
 }
 
 static int vga_init(void) {
@@ -79,7 +79,6 @@ static int vga_init(void) {
     g_signals = (volatile uint32_t *)((char *)g_base + VGA_SIGNALS_OFFSET);
     g_data    = (volatile uint32_t *)((char *)g_base + VGA_DATA_OFFSET);
 
-    /* pulso de reset no IP VGA (bit1 do signals) */
     *g_signals = VGA_SIG_RESET; usleep(1000);
     *g_signals = 0;             usleep(1000);
     return 0;
@@ -95,10 +94,10 @@ static void vga_set_pixel(int x, int y, int r, int g, int b) {
     uint32_t word;
     if (x < 0 || x >= VGA_W || y < 0 || y >= VGA_H) return;
     word = pack_pixel(x, y, r, g, b);
-    *g_data    = word;                 /* dado estavel  */
-    *g_signals = VGA_SIG_ENABLE;       /* enable=1 -> escreve */
-    while ((*g_status & 0x1) == 0) { } /* espera done (0x30) */
-    *g_signals = 0;                    /* enable=0 */
+    *g_data    = word;                 
+    *g_signals = VGA_SIG_ENABLE;       
+    while ((*g_status & 0x1) == 0) { } 
+    *g_signals = 0;                    
 }
 
 static void vga_fill_rect(int x0, int y0, int w, int h, int r, int g, int b) {
@@ -112,32 +111,28 @@ static void vga_clear(int r, int g, int b) {
     vga_fill_rect(0, 0, VGA_W, VGA_H, r, g, b);
 }
 
-/* Exibe a imagem 28x28 (8 bits/pixel) em 224x224, centralizada. */
 static void vga_show_image28(const uint8_t img[GRID * GRID]) {
     int gx, gy;
     vga_clear(0, 0, 0);
     for (gy = 0; gy < GRID; gy++) {
         for (gx = 0; gx < GRID; gx++) {
-            int v = img[gy * GRID + gx] >> 5;   /* 8 -> 3 bits (cinza) */
+            int v = img[gy * GRID + gx] >> 5;   
             vga_fill_rect(OFF_X + gx * CELL, OFF_Y + gy * CELL,
                           CELL, CELL, v, v, v);
         }
     }
 }
 
-/* Pinta uma celula (bloco CELLxCELL) com cor RGB (0..7). Faz bounds-check. */
 static void put_cell_rgb(int gx, int gy, int r, int g, int b) {
     if (gx < 0 || gx >= GRID || gy < 0 || gy >= GRID) return;
     vga_fill_rect(OFF_X + gx * CELL, OFF_Y + gy * CELL, CELL, CELL, r, g, b);
 }
 
-/* Pinta uma celula em escala de cinza: branca (on) ou preta. */
 static void put_cell(int gx, int gy, int on) {
     int v = on ? 7 : 0;
     put_cell_rgb(gx, gy, v, v, v);
 }
 
-/* Desenha o bloco do cursor (CURSOR_CELLS x CURSOR_CELLS) com a cor dada. */
 static void draw_cursor(int gx, int gy, int r, int g, int b) {
     int dx, dy;
     for (dy = 0; dy < CURSOR_CELLS; dy++)
@@ -145,7 +140,6 @@ static void draw_cursor(int gx, int gy, int r, int g, int b) {
             put_cell_rgb(gx + dx, gy + dy, r, g, b);
 }
 
-/* Restaura o bloco sob o cursor conforme o estado (branco/preto). */
 static void restore_block(uint8_t st[GRID][GRID], int gx, int gy) {
     int dx, dy;
     for (dy = 0; dy < CURSOR_CELLS; dy++)
@@ -156,18 +150,18 @@ static void restore_block(uint8_t st[GRID][GRID], int gx, int gy) {
         }
 }
 
-/* Pinta no estado as celulas cobertas pelo cursor (apenas as ainda vazias). */
 static void paint_block(uint8_t st[GRID][GRID], int gx, int gy) {
     int dx, dy;
     for (dy = 0; dy < CURSOR_CELLS; dy++)
         for (dx = 0; dx < CURSOR_CELLS; dx++) {
             int cgx = gx + dx, cgy = gy + dy;
-            if (cgx < GRID && cgy < GRID && !st[cgy][cgx])
+            if (cgx < GRID && cgy < GRID && !st[cgy][cgx]) {
                 st[cgy][cgx] = 255;
+                put_cell(cgx, cgy, 1); 
+            }
         }
 }
 
-/* Descarta eventos pendentes do mouse (ressincroniza o fluxo PS/2). */
 static void flush_mouse(int fd) {
     int fl = fcntl(fd, F_GETFL, 0);
     unsigned char t[64];
@@ -177,92 +171,133 @@ static void flush_mouse(int fd) {
 }
 
 /* ===================== Modo de desenho ===================== */
-/* Cursor = quadrado 16x16 (2x2 celulas). BRANCO quando parado, VERDE enquanto
- * pinta (botao esquerdo). DIREITO finaliza+infere; MEIO (scroll) apaga tudo.
- * A pintura ocorre nas celulas cobertas pelo cursor; out[784] recebe 0/255. */
 static int draw_mode(uint8_t out[GRID * GRID]) {
     static uint8_t state[GRID][GRID];
     unsigned char p[3];
     int fd, cx, cy, gx, gy, ogx, ogy, i, j;
-    const int gmax = GRID - CURSOR_CELLS;   /* ancora maxima do cursor */
+    int was_left = 0;
+    const int gmax = GRID - CURSOR_CELLS;
+
+    /* Configura o terminal para leitura instantanea do teclado (tecla Enter) */
+    struct termios oldt, newt;
+    tcgetattr(STDIN_FILENO, &oldt);
+    newt = oldt;
+    newt.c_lflag &= ~(ICANON | ECHO);
+    tcsetattr(STDIN_FILENO, TCSANOW, &newt);
 
     fd = open("/dev/input/mice", O_RDONLY);
-    if (fd < 0) { perror("open /dev/input/mice"); return -1; }
+    if (fd < 0) { 
+        perror("open /dev/input/mice"); 
+        tcsetattr(STDIN_FILENO, TCSANOW, &oldt); /* restaura terminal se der erro */
+        return -1; 
+    }
 
-    /* Descarta o que sobrou no buffer (ex.: o release do botao direito que
-     * encerrou a sessao anterior) - era isso que fazia sair sozinho. */
     flush_mouse(fd);
 
     memset(state, 0, sizeof(state));
-    vga_clear(0, 0, 0);                 /* fundo preto */
+    vga_clear(0, 0, 0);                 
 
     cx = CANVAS / 2; cy = CANVAS / 2;
     gx = cx / CELL; gy = cy / CELL;
     if (gx > gmax) gx = gmax;
     if (gy > gmax) gy = gmax;
     ogx = gx; ogy = gy;
-    draw_cursor(gx, gy, 7, 7, 7);       /* cursor branco inicial */
+    draw_cursor(gx, gy, 7, 7, 7);       
 
     printf("\n[MODO DESENHO]\n");
-    printf("  ESQUERDO: pinta 8x8 | DIREITO: enviar+inferir | MEIO: apagar tudo\n");
+    printf("  ESQUERDO: pinta 8x8 | MEIO: apagar tudo | ENTER (teclado): confirmar e inferir\n");
 
-    while (read(fd, p, 3) == 3) {
-        int dx, dy, left, right, mid;
+    while (1) {
+        fd_set fds;
+        FD_ZERO(&fds);
+        FD_SET(fd, &fds);            /* Escuta o mouse */
+        FD_SET(STDIN_FILENO, &fds);  /* Escuta o teclado simultaneamente */
 
-        /* PS/2: o bit 3 do byte 0 e sempre 1. Se nao estiver, o fluxo
-         * desalinhou - descarta e ressincroniza (evita 'cliques' fantasmas). */
-        if (!(p[0] & 0x08)) { flush_mouse(fd); continue; }
+        /* Usa o select para bloquear sem gastar CPU ate que algo aconteca em um dos dois */
+        if (select(fd + 1, &fds, NULL, NULL, NULL) < 0) break;
 
-        dx    = (signed char)p[1];
-        dy    = (signed char)p[2];
-        left  = p[0] & 0x1;
-        right = p[0] & 0x2;
-        mid   = p[0] & 0x4;
-
-        if (right) {                   /* termina o desenho */
-            /* espera o botao direito VOLTAR A 0 antes de sair; senao o
-             * pacote de 'soltar' vaza e confirma o proximo desenho sozinho */
-            do {
-                if (read(fd, p, 3) != 3) break;
-            } while (p[0] & 0x2);
-            break;
+        /* Verifica se a interacao veio do teclado */
+        if (FD_ISSET(STDIN_FILENO, &fds)) {
+            char ch;
+            if (read(STDIN_FILENO, &ch, 1) == 1) {
+                if (ch == '\n' || ch == '\r') {
+                    printf("\n"); /* quebra a linha visualmente no console */
+                    break;        /* Sai do loop e confirma a inferencia */
+                }
+            }
         }
 
-        /* atualiza posicao do cursor (Y invertido) */
-        cx += dx; cy -= dy;
-        if (cx < 0) cx = 0;
-        if (cx >= CANVAS) cx = CANVAS - 1;
-        if (cy < 0) cy = 0;
-        if (cy >= CANVAS) cy = CANVAS - 1;
-        gx = cx / CELL; gy = cy / CELL;
-        if (gx > gmax) gx = gmax;
-        if (gy > gmax) gy = gmax;
+        /* Verifica se a interacao veio do mouse */
+        if (FD_ISSET(fd, &fds)) {
+            if (read(fd, p, 3) != 3) continue;
 
-        if (mid) {                     /* apaga todo o desenho */
-            memset(state, 0, sizeof(state));
-            vga_fill_rect(OFF_X, OFF_Y, CANVAS, CANVAS, 0, 0, 0);
-            ogx = gx; ogy = gy;
+            if (!(p[0] & 0x08)) { 
+                unsigned char discard;
+                read(fd, &discard, 1); 
+                continue; 
+            }
+
+            int dx    = (signed char)p[1];
+            int dy    = (signed char)p[2];
+            int left  = p[0] & 0x1;
+            int mid   = p[0] & 0x4;
+
+            cx += dx; cy -= dy;
+            if (cx < 0) cx = 0;
+            if (cx >= CANVAS) cx = CANVAS - 1;
+            if (cy < 0) cy = 0;
+            if (cy >= CANVAS) cy = CANVAS - 1;
+            gx = cx / CELL; gy = cy / CELL;
+            if (gx > gmax) gx = gmax;
+            if (gy > gmax) gy = gmax;
+
+            if (mid) {
+                memset(state, 0, sizeof(state));
+                vga_fill_rect(OFF_X, OFF_Y, CANVAS, CANVAS, 0, 0, 0);
+                ogx = gx; ogy = gy;
+                draw_cursor(gx, gy, 7, 7, 7);
+                continue;
+            }
+
+            if (left) {
+                if (!was_left) {
+                    paint_block(state, gx, gy);
+                } else {
+                    int x0 = ogx, y0 = ogy;
+                    int x1 = gx, y1 = gy;
+                    int dx_line = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
+                    int dy_line = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
+                    int err = dx_line + dy_line, e2;
+
+                    while (1) {
+                        paint_block(state, x0, y0);
+                        if (x0 == x1 && y0 == y1) break;
+                        e2 = 2 * err;
+                        if (e2 >= dy_line) { err += dy_line; x0 += sx; }
+                        if (e2 <= dx_line) { err += dx_line; y0 += sy; }
+                    }
+                }
+            }
+            was_left = left;
+
+            if (gx != ogx || gy != ogy) {
+                restore_block(state, ogx, ogy);
+                ogx = gx; ogy = gy;
+            }
+
             draw_cursor(gx, gy, 7, 7, 7);
-            continue;
         }
-
-        if (left) paint_block(state, gx, gy);   /* pinta as celulas sob o cursor */
-
-        /* move o cursor: restaura o bloco anterior conforme o estado */
-        if (gx != ogx || gy != ogy) {
-            restore_block(state, ogx, ogy);
-            ogx = gx; ogy = gy;
-        }
-
-        draw_cursor(gx, gy, 7, 7, 7);  /* cursor sempre branco */
     }
     close(fd);
+    
+    /* Restaura as definicoes originais do terminal antes de sair */
+    tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
 
     for (j = 0; j < GRID; j++)
         for (i = 0; i < GRID; i++)
             out[j * GRID + i] = state[j][i];
 
-    return 0;                          /* exibicao/inferencia ficam no chamador */
+    return 0;
 }
 
 /* ===================== Integracao com o coprocessador ===================== */
@@ -276,7 +311,6 @@ static long ler_bin(const char *caminho, void *dst, long max_bytes) {
     return n;
 }
 
-/* Carrega pesos/beta/bias uma vez (ficam na memoria da FPGA). 0 ok, <0 erro. */
 static int carregar_modelo(void) {
     static uint16_t w[ELM_N_WEIGHTS];
     static uint16_t bt[ELM_N_BETA];
@@ -292,12 +326,9 @@ static int carregar_modelo(void) {
     return 0;
 }
 
-/* Carrega um PNG em escala de cinza e preenche out[784] (28x28).
- * Se o PNG nao for 28x28, faz um reescalonamento por vizinho mais proximo.
- * Retorna 0 em sucesso, -1 em erro. */
 static int carregar_png_28(const char *caminho, uint8_t out[GRID * GRID]) {
     int w, h, n, x, y;
-    unsigned char *data = stbi_load(caminho, &w, &h, &n, 1); /* 1 canal (cinza) */
+    unsigned char *data = stbi_load(caminho, &w, &h, &n, 1);
     if (!data) {
         fprintf(stderr, "[-] Erro ao abrir PNG '%s': %s\n",
                 caminho, stbi_failure_reason());
@@ -317,22 +348,20 @@ static int carregar_png_28(const char *caminho, uint8_t out[GRID * GRID]) {
     return 0;
 }
 
-/* Envia a imagem (ja na memoria) e retorna o digito predito. */
 static int inferir(const uint8_t img[ELM_N_IMG]) {
     int r;
     if (carregar_imagem(img) != ELM_OK) {
         printf("[-] Falha ao enviar a imagem ao coprocessador.\n");
         return -1;
     }
-    iniciar_inferencia();          /* limpa status e dispara o START   */
-    r = obter_resultado();         /* espera o DONE desta imagem e le  */
-    reiniciar_fpga();              /* reset: limpa os registradores para a proxima operacao */
+    iniciar_inferencia();
+    r = obter_resultado();
+    reiniciar_fpga();
     return r;
 }
 
 /* ===================== Interface de texto ===================== */
 
-/* Le uma linha do teclado (sem o \n). Linha vazia => dst[0] == '\0'. */
 static void read_line(char *dst, size_t n) {
     size_t L;
     if (!fgets(dst, (int)n, stdin)) { dst[0] = '\0'; return; }
@@ -340,32 +369,29 @@ static void read_line(char *dst, size_t n) {
     while (L && (dst[L-1] == '\n' || dst[L-1] == '\r')) dst[--L] = '\0';
 }
 
-/* Carrega um PNG pelo caminho, exibe no VGA e imprime o digito predito. */
 static int inferir_arquivo(const char *caminho) {
     uint8_t img[ELM_N_IMG];
     if (carregar_png_28(caminho, img) != 0) return -1;
-    vga_show_image28(img);
+    vga_show_image28(img); 
     printf(">> DIGITO PREDITO: %d\n", inferir(img));
     return 0;
 }
 
 /* ---- Comandos do menu ---- */
 
-/* Envia a imagem de um arquivo PNG: mostra no monitor, envia E infere. */
 static void enviar_imagem_arquivo(void) {
     char caminho[256];
     printf("Caminho da imagem PNG: ");
     read_line(caminho, sizeof(caminho));
     if (!caminho[0]) { printf("[-] Caminho vazio.\n"); return; }
-    inferir_arquivo(caminho);          /* mostra + envia + infere + imprime */
+    inferir_arquivo(caminho);
 }
 
-/* Pede um caminho mantendo o atual como base (Enter mantem). */
 static void pedir_caminho_base(const char *rotulo, char *base, size_t n) {
     char linha[256];
     printf("Caminho do %s (.bin) [%s]: ", rotulo, base);
     read_line(linha, sizeof(linha));
-    if (linha[0]) { strncpy(base, linha, n - 1); base[n-1] = '\0'; }  /* so altera se digitar */
+    if (linha[0]) { strncpy(base, linha, n - 1); base[n-1] = '\0'; }
 }
 
 static void enviar_pesos(void) {
@@ -401,17 +427,15 @@ static void enviar_beta(void) {
     printf("[+] Beta enviado (%s).\n", g_path_bt);
 }
 
-/* Reset manual: limpa os registradores (ex.: trocar a imagem sem inferir). */
 static void cmd_reset(void) {
     reiniciar_fpga();
     printf("[+] FPGA resetada.\n");
 }
 
-/* Salva o desenho como PNG 28x28 (escala de cinza) na pasta minhas_imagens/. */
 static void salvar_desenho_png(const uint8_t img[GRID * GRID]) {
     static int seq = 0;
     char caminho[300];
-    mkdir("minhas_imagens", 0777);     /* cria a pasta (ok se ja existir) */
+    mkdir("minhas_imagens", 0777);
     snprintf(caminho, sizeof(caminho), "minhas_imagens/desenho_%ld_%d.png",
              (long)time(NULL), seq++);
     if (stbi_write_png(caminho, GRID, GRID, 1, img, GRID))
@@ -420,19 +444,49 @@ static void salvar_desenho_png(const uint8_t img[GRID * GRID]) {
         printf("[-] Falha ao salvar o PNG do desenho.\n");
 }
 
+static void suavizar_desenho(uint8_t img[GRID * GRID]) {
+    uint8_t tmp[GRID * GRID];
+    int x, y, dx, dy, pico = 0;
+    for (y = 0; y < GRID; y++)
+        for (x = 0; x < GRID; x++) {
+            int soma = 0, n = 0;
+            for (dy = -1; dy <= 1; dy++)
+                for (dx = -1; dx <= 1; dx++) {
+                    int nx = x + dx, ny = y + dy;
+                    if (nx >= 0 && nx < GRID && ny >= 0 && ny < GRID) {
+                        soma += img[ny * GRID + nx];
+                        n++;
+                    }
+                }
+            tmp[y * GRID + x] = (uint8_t)(soma / n);
+            if (tmp[y * GRID + x] > pico) pico = tmp[y * GRID + x];
+        }
+    if (pico > 0)
+        for (x = 0; x < GRID * GRID; x++) {
+            int v = tmp[x] * 255 / pico;
+            img[x] = (uint8_t)(v > 255 ? 255 : v);
+        }
+}
+
 static void modo_desenho(void) {
     uint8_t img[ELM_N_IMG];
     if (draw_mode(img) != 0) {
         printf("[-] Mouse indisponivel (/dev/input/mice). Rode como root.\n");
         return;
     }
-    /* botao direito ja encerrou. Salva, mostra, envia E infere. */
-    salvar_desenho_png(img);           /* salva em minhas_imagens/ (28x28 PNG) */
-    vga_show_image28(img);             /* mostra exatamente o que sera enviado */
+    
+    salvar_desenho_png(img);           
+    
+    /* * O desenho seco e fluido fica exatamente do jeito que foi feito no monitor VGA. 
+     * Agora o blur é executado e processado APENAS DENTRO da memoria RAM, 
+     * sem nunca ser enviado ao monitor novamente. 
+     */
+    suavizar_desenho(img);             
+    
+    /* A variavel tratada é despachada diretamente aos buffers da FPGA */
     printf(">> DIGITO PREDITO: %d\n", inferir(img));
 }
 
-/* Verifica se o nome termina em .png (qualquer caixa). */
 static int eh_png(const char *nome) {
     size_t L = strlen(nome);
     if (L < 4) return 0;
@@ -442,11 +496,6 @@ static int eh_png(const char *nome) {
          && (nome[L-1]=='g' || nome[L-1]=='G'));
 }
 
-/* Modo de validacao/benchmark:
- * percorre uma pasta de PNGs, infere cada um, mede latencia e grava um CSV
- * com acuracia (%), latencia media e desvio, e throughput (imagens/s).
- * O rotulo esperado de cada imagem e o PRIMEIRO digito do nome do arquivo
- * (ex.: "7_001.png" -> 7). Imagens sem digito no nome entram so na latencia. */
 static void modo_benchmark(void) {
     char pasta[256];
     char full[600];
@@ -455,19 +504,18 @@ static void modo_benchmark(void) {
     FILE *csv;
     uint8_t img[ELM_N_IMG];
     int total = 0, acertos = 0, ninf = 0;
-    int esperado = -1;                       /* rotulo = nome da pasta */
-    double soma = 0.0, soma2 = 0.0;          /* latencia em ms */
+    int esperado = -1;
+    double soma = 0.0, soma2 = 0.0;
     const char *csvnome = "benchmark.csv";
 
     printf("Pasta com PNGs de teste (o nome da pasta e o rotulo, ex.: 5): ");
     read_line(pasta, sizeof(pasta));
     if (!pasta[0]) return;
 
-    /* rotulo esperado = primeiro digito do ULTIMO componente do caminho */
     {
         const char *base = pasta, *s;
         for (s = pasta; *s; s++)
-            if (*s == '/') base = s + 1;      /* fica no ultimo componente */
+            if (*s == '/') base = s + 1;
         for (s = base; *s; s++)
             if (*s >= '0' && *s <= '9') { esperado = *s - '0'; break; }
     }
@@ -581,7 +629,6 @@ int main(int argc, char **argv) {
     int op, i;
     const char *img_cli = NULL;
 
-    /* parametros e imagem via linha de comando */
     for (i = 1; i < argc; i++) {
         if      (!strcmp(argv[i], "-w") && i + 1 < argc) { strncpy(g_path_w,  argv[++i], sizeof(g_path_w) -1); }
         else if (!strcmp(argv[i], "-b") && i + 1 < argc) { strncpy(g_path_bt, argv[++i], sizeof(g_path_bt)-1); }
