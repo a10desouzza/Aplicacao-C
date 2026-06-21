@@ -5,8 +5,6 @@ A Aplicação atua como a camada de mais alto nível do sistema. É ela quem lê
 
 O programa consiste em um arquivo `.c` (Aplicação principal), um `.h` (Cabeçalho com protótipos e constantes do Driver) e um `.s` (o próprio Driver em Assembly, reutilizado sem modificações na lógica de envio).
 
----
-
 # Fundamentação Teórica
 
 1. **Controladora VGA e MMIO**
@@ -33,8 +31,6 @@ O programa consiste em um arquivo `.c` (Aplicação principal), um `.h` (Cabeça
 
 4. **Suavização de Imagem (Blur por Média)**
    - A rede neural do CoProcessador foi treinada com imagens do dataset MNIST, cujos dígitos são naturalmente suaves e com bordas difusas. Um desenho feito com o mouse, por outro lado, tende a ser formado por blocos de pixels completamente brancos (255) ou completamente pretos (0), sem transições graduais. Para aproximar a distribuição da imagem desenhada à que o modelo espera, a Aplicação aplica um filtro de blur por média simples de janela 3×3, seguido de normalização pelo valor de pico, antes de enviar a imagem ao CoProcessador.
-
----
 
 # Metodologia
 
@@ -110,8 +106,6 @@ Com essa arquitetura definida, nosso objetivo era criar uma Aplicação que cone
 
      O modo benchmark percorre todos os PNGs de uma pasta informada pelo usuário, infere cada um e mede a latência individualmente com `clock_gettime(CLOCK_MONOTONIC)`. O rótulo esperado é extraído do nome da pasta (convenção: a pasta se chama com o dígito, ex.: `5`). Ao final, imprime e salva em `benchmark.csv` métricas completas: acurácia, latência média, desvio padrão e throughput em imagens por segundo. Embora o formato de saída desse benchmark tenha sido escolha de projeto, as informações que ele contêm foram padrão das outras aplicações, já que passavam por um requisito de conteúdo.
 
----
-
 # Manual de Uso
 
 - Faça o download de todo o conteúdo das pastas `data` e `src`;
@@ -134,7 +128,6 @@ gcc main.c driver.s -o elm -I. -no-pie -lm
 
 O `-lm` é necessário para as funções matemáticas (`sqrt`) usadas pelo benchmark. O `-no-pie` e o `sudo su` seguem a mesma necessidade descrita no Driver: acesso root ao `/dev/mem` e linkagem sem conflito entre o `.c` e o `.s`.
 
----
 
 # Testes e Discussões
 
