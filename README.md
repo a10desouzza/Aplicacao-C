@@ -45,7 +45,9 @@ O programa consiste em um arquivo `.c` (Aplicação principal), um `.h` (Cabeça
 Com essa arquitetura definida, nosso objetivo era criar uma Aplicação que conectasse esses três sistemas — Driver, CoProcessador e VGA — de forma transparente para o usuário final, com uma interface de menu simples no terminal. Para isso, dividimos o problema em três grandes eixos:
 
 ## 1. A Camada VGA
-
+   - **Requisitos**
+     Foi requisitado pelo problema, que o usuário pudesse vizualizar as imagens que fossem enviadas para a inferência, além de conseguir desenhar, no monitor VGA, uma nova imagem de um número. Para isso, tivemos que adaptar, além da vizualização, uma maneira do usuário desenhar com o mouse, e mostrar na tela em tempo real. Não nos foi requisitada nenhum padrão de cor específico, então não vamos entrar em detalhes sobre isso.
+     
    - **Inicialização e Mapeamento**
 
      Assim como o Driver mapeia os registradores do CoProcessador, a Aplicação realiza seu próprio mapeamento da ponte lightweight para acessar os registradores do IP VGA. A inicialização abre `/dev/mem`, mapeia a página física em `0xFF200000` e calcula os ponteiros para os três registradores relevantes: `g_status` (0x30), `g_signals` (0x40) e `g_data` (0x50). Um pulso de reset é enviado ao IP logo após o mapeamento para garantir um estado inicial limpo.
