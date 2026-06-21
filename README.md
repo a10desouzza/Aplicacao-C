@@ -79,6 +79,8 @@ Com essa arquitetura definida, nosso objetivo era criar uma Aplicação que cone
       
       Primeiramente, tivemos que reformular o Driver em assembly, do Marco 2 para não acessar a pasta raiz do sistema de arquivos por conta própria. Embora a maneira que o Driver acessava os arquivos, não tinha sido um requisito do segundo marco, foi estabelecida como requisito desse terceiro, então isso não foi somente uma escolha de projeto. Agora, suas funções `carregar_pesos`, `carregar_bias`, `carregar_beta` e `carregar_imagem` recebem apenas ponteiros para buffers já carregados na memória pelo C, algo que foi facilitado pelo uso de bibliotecas. Isso tornou possível que a imagem desenhada com o mouse que nunca existiu como arquivo percorra exatamente o mesmo caminho que uma imagem lida do disco.
 
+      Diagrama atualizado desde o Marco 2:
+      
    ```c
    static int inferir(const uint8_t img[ELM_N_IMG]) {
        carregar_imagem(img);   /* ponteiro direto, sem arquivo */
