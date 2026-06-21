@@ -46,6 +46,7 @@ Com essa arquitetura definida, nosso objetivo era criar uma Aplicação que cone
 
 ## 1. A Camada VGA
    - **Requisitos**
+     
      Foi requisitado pelo problema, que o usuário pudesse vizualizar as imagens que fossem enviadas para a inferência, além de conseguir desenhar, no monitor VGA, uma nova imagem de um número. Para isso, tivemos que adaptar, além da vizualização, uma maneira do usuário desenhar com o mouse, e mostrar na tela em tempo real. Não nos foi requisitada nenhum padrão de cor específico, então não vamos entrar em detalhes sobre isso.
      
    - **Inicialização e Mapeamento**
@@ -55,7 +56,8 @@ Com essa arquitetura definida, nosso objetivo era criar uma Aplicação que cone
    - **Escrita de Pixels**
 
      A função `vga_set_pixel` é o núcleo da camada de vídeo. Ela empacota as coordenadas e a cor em uma palavra de 32 bits, escreve no registrador de dados, pulsa o enable e aguarda o bit de conclusão no registrador de status em polling. A partir dela, `vga_fill_rect` permite pintar retângulos inteiros, e `vga_show_image28` converte o buffer de 784 bytes em 784 blocos 8×8 na tela, mapeando a intensidade de cada pixel de 8 bits para os 3 bits de brilho disponíveis no IP (`v = pixel >> 5`).
-
+      Tinhamos adicionado uma função "blur", que fazia uma média entre todos os espaços 3x3 de píxel, e igualava as cores dessa área à essa média. Essa foi uma escolha de projeto tomada por muitos de nossos colegas, já que para a maioria dos casos, a acurácia do projeto foi aumentada, mesmo que o blur não estivesse sendo mostrado no monitor, porém no nosso caso, essa função causou uma queda no valor médio da acurácia, o que nos fez escolher tirar essa função do projeto, já que ela não era um dos requisitos de projeto.
+     
    - **Modo de Desenho**
 
      O modo de desenho é a função mais complexa da Aplicação. Ele combina a leitura do mouse via `/dev/input/mice` com a atualização em tempo real do VGA. O cursor é representado visualmente como um bloco branco que se move pela grade 28×28. Quando o botão esquerdo está pressionado, a função `paint_block` marca a célula como branca no estado interno e na tela. Para traços rápidos — onde o mouse percorre múltiplas células entre duas leituras — foi implementado o algoritmo de linha de Bresenham, que interpola e pinta todas as células intermediárias, evitando traços fragmentados.
@@ -74,8 +76,8 @@ Com essa arquitetura definida, nosso objetivo era criar uma Aplicação que cone
 ## 2. A Integração com o Driver e o CoProcessador
 
    - **Separação de Responsabilidades**
-
-     Uma decisão central de projeto foi a separação clara entre quem lê arquivos e quem envia dados ao hardware. O Driver em Assembly foi reformulado (Marco 3) para não abrir mais arquivos por conta própria. Agora, suas funções `carregar_pesos`, `carregar_bias`, `carregar_beta` e `carregar_imagem` recebem apenas ponteiros para buffers já carregados na memória pelo C. Isso tornou possível que a imagem desenhada com o mouse — que nunca existiu como arquivo — percorra exatamente o mesmo caminho que uma imagem lida do disco.
+      
+      Primeiramente, tivemos que reformular o Driver em assembly, do Marco 2 para não acessar a pasta raiz do sistema de arquivos por conta própria. Embora a maneira que o Driver acessava os arquivos, não tinha sido um requisito do segundo marco, foi estabelecida como requisito desse terceiro, então isso não foi somente uma escolha de projeto. Agora, suas funções `carregar_pesos`, `carregar_bias`, `carregar_beta` e `carregar_imagem` recebem apenas ponteiros para buffers já carregados na memória pelo C, algo que foi facilitado pelo uso de bibliotecas. Isso tornou possível que a imagem desenhada com o mouse que nunca existiu como arquivo percorra exatamente o mesmo caminho que uma imagem lida do disco.
 
    ```c
    static int inferir(const uint8_t img[ELM_N_IMG]) {
@@ -98,12 +100,12 @@ Com essa arquitetura definida, nosso objetivo era criar uma Aplicação que cone
 ## 3. Interface de Usuário e Benchmark
 
    - **Menu Interativo**
-
-     A interface principal é um menu de texto com oito opções, executado em loop. As opções cobrem todos os fluxos: inferência por arquivo, envio individual de cada parâmetro do modelo, modo de desenho, reset da FPGA e benchmark. A separação de cada ação em uma função própria (`enviar_imagem_arquivo`, `enviar_pesos`, `modo_desenho`, etc.) manteve o `main` limpo e o código extensível.
+     
+     Tentamos manter a interface do usuário apenas no que nos foi requisitado: inferência por arquivo, envio individual de cada parâmetro do modelo, modo de desenho, reset da FPGA e benchmark. A separação de cada ação em uma função própria (`enviar_imagem_arquivo`, `enviar_pesos`, `modo_desenho`, etc.) ajudou na organização do nosso código princial.
 
    - **Modo Benchmark**
 
-     O modo benchmark percorre todos os PNGs de uma pasta informada pelo usuário, infere cada um e mede a latência individualmente com `clock_gettime(CLOCK_MONOTONIC)`. O rótulo esperado é extraído do nome da pasta (convenção: a pasta se chama com o dígito, ex.: `5`). Ao final, imprime e salva em `benchmark.csv` métricas completas: acurácia, latência média, desvio padrão e throughput em imagens por segundo.
+     O modo benchmark percorre todos os PNGs de uma pasta informada pelo usuário, infere cada um e mede a latência individualmente com `clock_gettime(CLOCK_MONOTONIC)`. O rótulo esperado é extraído do nome da pasta (convenção: a pasta se chama com o dígito, ex.: `5`). Ao final, imprime e salva em `benchmark.csv` métricas completas: acurácia, latência média, desvio padrão e throughput em imagens por segundo. Embora o formato de saída desse benchmark tenha sido escolha de projeto, as informações que ele contêm foram padrão das outras aplicações, já que passavam por um requisito de conteúdo.
 
 ---
 
@@ -140,3 +142,9 @@ A Aplicação cumpre seu papel de camada de integração entre os três sistemas
 O modo de desenho representa a contribuição mais relevante desta etapa do projeto: ele fecha o ciclo completo do sistema, permitindo que o usuário desenhe um dígito diretamente na tela VGA com o mouse, veja o resultado em tempo real e receba a predição do CoProcessador, tudo sem depender de arquivos externos. A suavização aplicada no buffer antes do envio é um ajuste pragmático que aproxima a distribuição do desenho à distribuição do dataset de treinamento da rede, com impacto positivo na qualidade das predições.
 
 Há, ainda, um ponto de melhoria a ser considerado: a escrita de pixels no VGA é feita em polling sícrono, pixel por pixel, o que torna operações como `vga_clear` e `vga_show_image28` perceptivelmente lentas. Uma abordagem com DMA ou com escrita em burst reduziria esse gargalo de forma significativa em versões futuras.
+
+# Referências
+
+Controladora VGA e CoProcessador, ambos de Maike: https://github.com/DestinyWolf/Problema_SD_2026_1?authuser=0
+
+Resultado do Marco 2, de nossa autoria: https://github.com/a10desouzza/Driver
