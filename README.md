@@ -141,6 +141,23 @@ O `-lm` é necessário para as funções matemáticas (`sqrt`) usadas pelo bench
 
 # Testes e Discussões
 
+### Tabela X — Resultado da validação por dígito (9.358 imagens)
+
+| Dígito   |   Imagens |   Acertos |   Erros | Acurácia   |   Lat. média (ms) |   Desvio (ms) |   Throughput (img/s) | Erro mais frequente   |
+|:---------|----------:|----------:|--------:|:-----------|------------------:|--------------:|---------------------:|:----------------------|
+| 0        |       980 |       910 |      70 | 92.9%      |            18.63  |         0.055 |                53.68 | 6 (18 casos)          |
+| 1        |      1135 |      1106 |      29 | 97.4%      |            18.647 |         0.4   |                53.63 | 8 (10 casos)          |
+| 2        |      1032 |       810 |     222 | 78.5%      |            18.552 |         0.062 |                53.9  | 3 (47 casos)          |
+| 3        |      1010 |       817 |     193 | 80.9%      |            18.603 |         0.224 |                53.76 | 5 (43 casos)          |
+| 4        |       982 |       833 |     149 | 84.8%      |            18.629 |         0.052 |                53.68 | 9 (69 casos)          |
+| 5        |       892 |       572 |     320 | 64.1%      |            18.642 |         0.057 |                53.64 | 3 (80 casos)          |
+| 6        |       958 |       856 |     102 | 89.4%      |            18.641 |         0.279 |                53.65 | 0 (37 casos)          |
+| 7        |      1028 |       859 |     169 | 83.6%      |            18.611 |         0.236 |                53.73 | 1 (48 casos)          |
+| 8        |       332 |       236 |      96 | 71.1%      |            18.654 |         0.08  |                53.61 | 1 / 3 / 5 (16 cada)   |
+| 9        |      1009 |       778 |     231 | 77.1%      |            18.614 |         0.468 |                53.72 | 4 (68 casos)          |
+| Geral    |      9358 |      7777 |    1581 | 83.1%      |            18.62  |         0.255 |                53.71 | —                     |
+
+
 # Conclusão
 
 Acreditamos ter atendido todos os requisitos do projeto, e seguido as escolhas discutidas em sala. Nosso projeto é totalmente funcional, integramos o Driver com a controladora VGA, e geramos uma aplicação simples, mas funcional, para o usuário ter controle e visualização dos resultados.
