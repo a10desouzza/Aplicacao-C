@@ -444,30 +444,6 @@ static void salvar_desenho_png(const uint8_t img[GRID * GRID]) {
         printf("[-] Falha ao salvar o PNG do desenho.\n");
 }
 
-static void suavizar_desenho(uint8_t img[GRID * GRID]) {
-    uint8_t tmp[GRID * GRID];
-    int x, y, dx, dy, pico = 0;
-    for (y = 0; y < GRID; y++)
-        for (x = 0; x < GRID; x++) {
-            int soma = 0, n = 0;
-            for (dy = -1; dy <= 1; dy++)
-                for (dx = -1; dx <= 1; dx++) {
-                    int nx = x + dx, ny = y + dy;
-                    if (nx >= 0 && nx < GRID && ny >= 0 && ny < GRID) {
-                        soma += img[ny * GRID + nx];
-                        n++;
-                    }
-                }
-            tmp[y * GRID + x] = (uint8_t)(soma / n);
-            if (tmp[y * GRID + x] > pico) pico = tmp[y * GRID + x];
-        }
-    if (pico > 0)
-        for (x = 0; x < GRID * GRID; x++) {
-            int v = tmp[x] * 255 / pico;
-            img[x] = (uint8_t)(v > 255 ? 255 : v);
-        }
-}
-
 static void modo_desenho(void) {
     uint8_t img[ELM_N_IMG];
     if (draw_mode(img) != 0) {
@@ -475,13 +451,7 @@ static void modo_desenho(void) {
         return;
     }
     
-    salvar_desenho_png(img);           
-    
-    /* * O desenho seco e fluido fica exatamente do jeito que foi feito no monitor VGA. 
-     * Agora o blur é executado e processado APENAS DENTRO da memoria RAM, 
-     * sem nunca ser enviado ao monitor novamente. 
-     */
-    suavizar_desenho(img);             
+    salvar_desenho_png(img);                  
     
     /* A variavel tratada é despachada diretamente aos buffers da FPGA */
     printf(">> DIGITO PREDITO: %d\n", inferir(img));
