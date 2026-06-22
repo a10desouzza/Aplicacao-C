@@ -14,6 +14,7 @@ O programa consiste em um arquivo `.c` (Aplicação principal), um `.h` (Cabeça
 2. **Protocolo de Pacotes do Pixel VGA**
    - Para que o IP VGA reconheça e pinte corretamente cada pixel na tela, a palavra de 32 bits precisa ser compactada em um formato específico, definido pela controladora. O compactamento segue a lógica abaixo:
 
+
    ```c
    static uint32_t pack_pixel(int x, int y, int r, int g, int b) {
        return ((uint32_t)(y & 0x3FF) << 19)
@@ -32,12 +33,12 @@ O programa consiste em um arquivo `.c` (Aplicação principal), um `.h` (Cabeça
    - A leitura desse dispositivo é restritiva por natureza, o que exigiria uma thread dedicada caso a aplicação precisasse escutar o teclado ao mesmo tempo. Optamos por usar uma syscall `select`, que permite monitorar múltiplos descritores de arquivo simultaneamente, bloqueando a execução apenas até que qualquer um deles tenha dados disponíveis sem gastar ciclos de CPU em espera ativa.
 
 4. **Algoritmo de linha de Bresenham**
-   - O problema da rasterização de linhas está na adaptação de uma reta matemática contínua para uma tela digital composta por uma matriz discreta de pixels inteiros. Algoritmos tradicionais resolvem isso calculando a equação da reta passo a passo, o que exige divisões, números decimais (floating-point) e arredondamentos constantes — operações que são computacionalmente lentas e pesadas para o hardware de processamento.
+   - O problema da rasterização de linhas está na adaptação de uma reta matemática contínua para uma tela digital composta por uma matriz discreta de pixels inteiros. Algoritmos tradicionais resolvem isso calculando a equação da reta passo a passo, o que exige divisões, números decimais (floating-point) e arredondamentos constantes operações que são computacionalmente lentas e pesadas para o hardware de processamento.
 
    - O Algoritmo de Bresenham resolve isso eliminando os números decimais e aplicando apenas aritmética de inteiros. Ele utiliza uma variável de decisão que acumula o erro de aproximação a cada passo; dependendo do sinal dessa variável (positivo ou negativo), o algoritmo descobre se o próximo pixel correto deve ser o vizinho direto ou o em diagonal. Como a atualização desse erro envolve apenas somas, subtrações e multiplicações por dois (deslocamento de bits), a renderização se torna extremamente rápida e otimizada para o nível de hardware.
 
 5. **Polling**
-   - É uma maneira de um Processador tratar suas entradas e saídas. Nessa filosofia, o Processador fica em um ciclo de pedir um sinal para a conexão, e só desvia sua atenção para a próxima, quando algum sinal for recebido.
+   - É uma maneira de um Processador tratar suas entradas e saídas. Nessa filosofia, o Processador fica em um ciclo de pedir um sinal para cada conexão, e só desvia sua atenção para a próxima, quando algum sinal for recebido.
 
     - Embora possua seus problemas, por conta da arquitetura do projeto, e a frequência em que as conexões são usadas, optamos por usar essa filosofia.
 
