@@ -141,7 +141,9 @@ O `-lm` é necessário para as funções matemáticas (`sqrt`) usadas pelo bench
 
 # Testes e Discussões
 
-### Tabela X — Resultado da validação por dígito (9.358 imagens)
+  - Assim como requisitado pelo projeto, o usuário tem a opção de gerar, em .CSV, os resultados dos benchmarks de cada dígito, onde todas as imagens passam pela inferência. Esse teste já foi realizado por nós, e está disponível como o benchmark geral de todas as imagens:
+
+### Resultados gerais (9.358 imagens)
 
 | Dígito   |   Imagens |   Acertos |   Erros | Acurácia   |   Lat. média (ms) |   Desvio (ms) |   Throughput (img/s) | Erro mais frequente   |
 |:---------|----------:|----------:|--------:|:-----------|------------------:|--------------:|---------------------:|:----------------------|
