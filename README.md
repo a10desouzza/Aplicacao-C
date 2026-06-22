@@ -39,7 +39,7 @@ O programa consiste em um arquivo `.c` (Aplicação principal), um `.h` (Cabeça
 5. **Polling**
    - É uma maneira de um Processador tratar suas entradas e saídas. Nessa filosofia, o Processador fica em um ciclo de pedir um sinal para a conexão, e só desvia sua atenção para a próxima, quando algum sinal for recebido.
 
-     Embora possua seus problemas, por conta da arquitetura do projeto, e a frequência em que as conexões são usadas, optamos por usar essa filosofia.
+    - Embora possua seus problemas, por conta da arquitetura do projeto, e a frequência em que as conexões são usadas, optamos por usar essa filosofia.
 
 
 # Metodologia
