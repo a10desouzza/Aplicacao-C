@@ -130,7 +130,7 @@ gcc main.c driver.s -o elm -I. -no-pie -lm
 ./elm
 ```
 
-- Para especificar caminhos alternativos para os parâmetros ou inferir uma imagem diretamente:
+- Inferir diretamente uma imagem:
 
 ```bash
 ./elm -w caminho/pesos.bin -b caminho/beta.bin -s caminho/bias.bin -i imagem.png
