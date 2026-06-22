@@ -65,7 +65,9 @@ Com essa arquitetura definida, nosso objetivo era criar uma Aplicação que cone
      A função `vga_set_pixel` é a principal função da camada de vídeo. Ela comprime as coordenadas e a cor em uma palavra de 32 bits, escreve no registrador de dados, envia o enable e aguarda o bit de conclusão no registrador de status em polling. A partir dela, `vga_fill_rect` permite pintar retângulos inteiros, e `vga_show_image28` converte o buffer de 784 bytes em 784 blocos 8×8 na tela, mapeando a intensidade de cada pixel de 8 bits para os 3 bits de brilho disponíveis no IP (`v = pixel >> 5`).
       Tinhamos adicionado uma função "blur", que fazia uma média entre todos os espaços 3x3 de píxel, e igualava as cores dessa área à essa média. Essa foi uma escolha de projeto tomada por muitos de nossos colegas, já que para a maioria dos casos, a acurácia do projeto foi aumentada, mesmo que o blur não estivesse sendo mostrado no monitor, porém no nosso caso, essa função causou uma queda no valor médio da acurácia, o que nos fez escolher tirar essa função do projeto, já que ela não era um dos requisitos.
 
-     ![Exemplo-de-Imagem](/data/Image-Example.png)
+      Exemplo da vizualização de imagens pré-carregadas:
+     
+     ![Exemplo-de-Imagem](/data/Image-Example2.png)
 
      
    - **Modo de Desenho**
