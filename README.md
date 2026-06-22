@@ -181,4 +181,8 @@ Controladora VGA e CoProcessador, ambos de Maike: https://github.com/DestinyWolf
 
 Resultado do Marco 2, de nossa autoria: https://github.com/a10desouzza/Driver
 
+Biblioteca stb:
 https://github.com/nothings/stb
+
+Algoritmo de Bresenham:
+https://materialpublic.imd.ufrn.br/curso/disciplina/5/69/7/4
