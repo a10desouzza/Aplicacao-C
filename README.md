@@ -66,7 +66,7 @@ Com essa arquitetura definida, nosso objetivo era criar uma Aplicação que cone
      
    - **Modo de Desenho**
 
-     O modo de desenho é a função mais complexa da Aplicação. Ele combina a leitura do mouse via `/dev/input/mice` com a atualização em tempo real do VGA. O cursor é representado visualmente como um bloco branco que se move pela grade 28×28. Quando o botão esquerdo está pressionado, a função `paint_block` marca a célula como branca no estado interno e na tela. Para traços rápidos, onde o mouse percorre múltiplas células entre duas leituras, implementamos o algoritmo de linha de Bresenham, que interpola e pinta todas as células intermediárias, para não ficarem fragmentos.
+     O modo de desenho é a função mais complexa da Aplicação. Ele combina a leitura do mouse via `/dev/input/mice` com a atualização em tempo real do VGA. O cursor é representado visualmente como um bloco branco que se move pela grade 28×28. Quando o botão esquerdo está pressionado, a função `paint_block` marca a célula como branca no estado interno e na tela. Para traços rápidos, onde o mouse percorre múltiplas células entre duas leituras, implementamos, com a biblioteca stb, o algoritmo de linha de Bresenham, que interpola e pinta todas as células intermediárias, para não ficarem fragmentos.
 
      O botão do meio do mouse limpa o a matriz inteira. O Enter no teclado confirma e encerra o modo de desenho, devolvendo o buffer preenchido.
 
@@ -173,3 +173,5 @@ Como ponto de melhoria, consideramos que o Blur poderia ter sido implementado, s
 Controladora VGA e CoProcessador, ambos de Maike: https://github.com/DestinyWolf/Problema_SD_2026_1?authuser=0
 
 Resultado do Marco 2, de nossa autoria: https://github.com/a10desouzza/Driver
+
+https://github.com/nothings/stb
