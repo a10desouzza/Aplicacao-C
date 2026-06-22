@@ -1,57 +1,74 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <stdint.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
-#include <dirent.h>
-#include <time.h>
-#include <math.h>
-#include <termios.h>
-#include <sys/select.h>
+/* ================================================================================================
+ * main.c - Aplicacao de usuario do classificador ELM (versao buffer-based / Marco 3)
+ * Autores: Pedro Henrique, Lucas Vilas Boas Dourado, Arthur Souza
+ *
+ * Aplicacao de alto nivel que roda no HPS (ARM + Linux) do SoC. Responsavel pela interface em
+ * modo texto, pela exibicao no monitor (IP-Core VGA) e pela orquestracao das inferencias no
+ * coprocessador ELM. Toda a comunicacao com a FPGA e feita por MMIO: os registradores do
+ * hardware sao mapeados em memoria via /dev/mem + mmap e acessados como ponteiros.
+ *
+ * DIVISAO DE RESPONSABILIDADES (Marco 3): o C le os dados (de arquivo OU da imagem desenhada) e
+ * passa um PONTEIRO ao driver Assembly, que envia ao coprocessador via MMIO sem abrir arquivos.
+ * ================================================================================================ */
 
-#define STB_IMAGE_IMPLEMENTATION
+/* ===================== Bibliotecas ===================== */
+#include <stdio.h>         /* I/O padrao e de arquivo: printf, fopen, fread, snprintf */
+#include <stdlib.h>        /* utilitarios gerais (abs, etc.) */
+#include <string.h>        /* memcpy, memset, strncpy, strlen, strcmp */
+#include <stdint.h>        /* tipos de largura fixa (uint8_t/16/32) exigidos pelo hardware */
+#include <unistd.h>        /* read, close, usleep */
+#include <fcntl.h>         /* open e flags (O_RDWR, O_SYNC, O_NONBLOCK) */
+#include <sys/mman.h>      /* mmap/munmap: base do acesso MMIO a ponte HPS-FPGA */
+#include <sys/stat.h>      /* mkdir: criacao da pasta de desenhos */
+#include <dirent.h>        /* opendir/readdir: varredura da pasta no benchmark */
+#include <time.h>          /* clock_gettime: medicao de latencia */
+#include <math.h>          /* sqrt: desvio padrao */
+#include <termios.h>       /* terminal em modo cru (capturar Enter na hora) */
+#include <sys/select.h>    /* select: escutar mouse e teclado simultaneamente */
+
+#define STB_IMAGE_IMPLEMENTATION        /* stb_image: decodificacao de PNG (header-only) */
 #include "stb_image.h"
-
-#define STB_IMAGE_WRITE_IMPLEMENTATION
+#define STB_IMAGE_WRITE_IMPLEMENTATION  /* stb_image_write: gravacao de PNG (header-only) */
 #include "stb_image_write.h"
 
-#include "elm_driver.h"
+#include "elm_driver.h"   /* prototipos do driver Assembly (mapear_fpga, carregar_*, inferir...) */
 
 /* ===== Caminhos dos parametros da rede (ajuste se necessario) ===== */
 #define PATH_WEIGHTS "../data/w_in_q.bin"
 #define PATH_BETA    "../data/beta_q.bin"
 #define PATH_BIAS    "../data/bias_q.bin"
 
-/* Caminhos-base dos parametros - padroes acima; sobrescritos pela linha de
- * comando (-w/-b/-s) e, em tempo de execucao, pelos comandos de envio. */
+/* Caminhos-base mutaveis: padroes acima, sobrescritos por -w/-b/-s e pelos comandos de envio. */
 static char g_path_w [256] = PATH_WEIGHTS;
 static char g_path_bt[256] = PATH_BETA;
 static char g_path_bs[256] = PATH_BIAS;
 
-/* ===================== Geometria do VGA ===================== */
+/* ===================== Geometria do VGA =====================
+ * Imagem 28x28 ampliada: cada pixel vira um bloco 8x8 (CELL), formando 224x224 (CANVAS)
+ * centralizado na tela de 320x240 (margens OFF_X/OFF_Y). */
 #define VGA_W   320
 #define VGA_H   240
-#define GRID    28                 /* imagem 28x28            */
-#define CELL    8                  /* cada pixel -> bloco 8x8 */
-#define CURSOR_CELLS 1             /* cursor 8x8 = 1 celula */
-#define CANVAS  (GRID * CELL)      /* 224                     */
-#define OFF_X   ((VGA_W - CANVAS) / 2)   /* 48 */
-#define OFF_Y   ((VGA_H - CANVAS) / 2)   /* 8  */
+#define GRID    28
+#define CELL    8
+#define CURSOR_CELLS 1
+#define CANVAS  (GRID * CELL)
+#define OFF_X   ((VGA_W - CANVAS) / 2)
+#define OFF_Y   ((VGA_H - CANVAS) / 2)
 
-/* ===================== PIOs do VGA na ponte lightweight ===================== */
+/* ===================== PIOs do VGA na ponte lightweight =====================
+ * Ponte HPS->FPGA em 0xFF200000. Tres PIOs com papeis/direcoes distintos: dados (pixel),
+ * sinais de controle (enable/reset) e status (done). */
 #define LW_BRIDGE_BASE   0xFF200000
-#define LW_BRIDGE_SPAN   0x00001000
-#define VGA_STATUS_OFFSET  0x30
-#define VGA_SIGNALS_OFFSET 0x40
-#define VGA_DATA_OFFSET    0x50
+#define LW_BRIDGE_SPAN   0x00001000   /* 4 KB (uma pagina) cobre todos os offsets */
+#define VGA_STATUS_OFFSET  0x30       /* done   (FPGA->HPS) */
+#define VGA_SIGNALS_OFFSET 0x40       /* enable/reset (HPS->FPGA) */
+#define VGA_DATA_OFFSET    0x50       /* pixel  (HPS->FPGA) */
 
-/* pio_vga_signals: bit0 = enable, bit1 = reset */
 #define VGA_SIG_ENABLE (1u << 0)
 #define VGA_SIG_RESET  (1u << 1)
 
+/* IMPORTANTE: 'volatile' impede o compilador de otimizar os acessos ao hardware; sem ele,
+ * o laco de espera do 'done' poderia virar laco infinito. */
 static volatile uint32_t *g_data;     /* pixel  (0x50) */
 static volatile uint32_t *g_signals;  /* ctrl   (0x40) */
 static volatile uint32_t *g_status;   /* done   (0x30) */
@@ -60,15 +77,19 @@ static int   g_fd   = -1;
 
 /* ===================== Camada VGA ===================== */
 
-/* Empacotamento conforme o ghrd_top.v. */
+/* pack_pixel: recebe coordenada (x,y) e cor (r,g,b); retorna a palavra de 32 bits no layout
+ * que o ghrd_top.v espera: posy[28:19]|posx[18:9]|red[8:6]|green[5:3]|blue[2:0]. */
 static uint32_t pack_pixel(int x, int y, int r, int g, int b) {
     return ((uint32_t)(y & 0x3FF) << 19)
          | ((uint32_t)(x & 0x3FF) << 9)
-         | ((uint32_t)(r & 0x7) << 6)        
-         | ((uint32_t)(g & 0x7) << 3)        
-         | ((uint32_t)(b & 0x7));            
+         | ((uint32_t)(r & 0x7) << 6)
+         | ((uint32_t)(g & 0x7) << 3)
+         | ((uint32_t)(b & 0x7));
 }
 
+/* vga_init: abre /dev/mem, mapeia a pagina da ponte e calcula os ponteiros dos tres PIOs.
+ * Nao recebe parametros. Retorna 0 em sucesso, -1 (open) ou -2 (mmap) em erro.
+ * Observacao: O_SYNC faz as escritas irem direto ao hardware, sem cache. */
 static int vga_init(void) {
     g_fd = open("/dev/mem", O_RDWR | O_SYNC);
     if (g_fd < 0) { perror("open /dev/mem"); return -1; }
@@ -78,28 +99,32 @@ static int vga_init(void) {
     g_status  = (volatile uint32_t *)((char *)g_base + VGA_STATUS_OFFSET);
     g_signals = (volatile uint32_t *)((char *)g_base + VGA_SIGNALS_OFFSET);
     g_data    = (volatile uint32_t *)((char *)g_base + VGA_DATA_OFFSET);
-
-    *g_signals = VGA_SIG_RESET; usleep(1000);
+    *g_signals = VGA_SIG_RESET; usleep(1000);   /* pulso de reset no IP */
     *g_signals = 0;             usleep(1000);
     return 0;
 }
 
+/* vga_close: libera o mapeamento e fecha o descritor. Sem parametros, sem retorno. */
 static void vga_close(void) {
     if (g_base != MAP_FAILED) munmap(g_base, LW_BRIDGE_SPAN);
     if (g_fd >= 0) close(g_fd);
     g_base = MAP_FAILED; g_fd = -1;
 }
 
+/* vga_set_pixel: recebe posicao e cor; sem retorno. PONTO-CHAVE do projeto: implementa o
+ * handshake de 4 fases com a FSM do VGA -> 1) dado estavel; 2) sobe enable (gatilho);
+ * 3) espera o done; 4) baixa enable. Coordenada fora da tela e ignorada. */
 static void vga_set_pixel(int x, int y, int r, int g, int b) {
     uint32_t word;
     if (x < 0 || x >= VGA_W || y < 0 || y >= VGA_H) return;
     word = pack_pixel(x, y, r, g, b);
-    *g_data    = word;                 
-    *g_signals = VGA_SIG_ENABLE;       
-    while ((*g_status & 0x1) == 0) { } 
-    *g_signals = 0;                    
+    *g_data    = word;
+    *g_signals = VGA_SIG_ENABLE;
+    while ((*g_status & 0x1) == 0) { }
+    *g_signals = 0;
 }
 
+/* vga_fill_rect: recebe origem (x0,y0), tamanho (w,h) e cor; preenche o retangulo. Sem retorno. */
 static void vga_fill_rect(int x0, int y0, int w, int h, int r, int g, int b) {
     int x, y;
     for (y = y0; y < y0 + h; y++)
@@ -107,32 +132,38 @@ static void vga_fill_rect(int x0, int y0, int w, int h, int r, int g, int b) {
             vga_set_pixel(x, y, r, g, b);
 }
 
+/* vga_clear: limpa a tela inteira com a cor dada. Sem retorno. */
 static void vga_clear(int r, int g, int b) {
     vga_fill_rect(0, 0, VGA_W, VGA_H, r, g, b);
 }
 
+/* vga_show_image28: recebe a imagem 28x28 (784 bytes) e a exibe ampliada 8x e centralizada.
+ * Sem retorno. O '>> 5' reduz cada pixel de 8 para 3 bits (resolucao de cor do IP). */
 static void vga_show_image28(const uint8_t img[GRID * GRID]) {
     int gx, gy;
     vga_clear(0, 0, 0);
     for (gy = 0; gy < GRID; gy++) {
         for (gx = 0; gx < GRID; gx++) {
-            int v = img[gy * GRID + gx] >> 5;   
+            int v = img[gy * GRID + gx] >> 5;
             vga_fill_rect(OFF_X + gx * CELL, OFF_Y + gy * CELL,
                           CELL, CELL, v, v, v);
         }
     }
 }
 
+/* put_cell_rgb: pinta o bloco 8x8 de uma celula da grade com cor RGB. Sem retorno. */
 static void put_cell_rgb(int gx, int gy, int r, int g, int b) {
     if (gx < 0 || gx >= GRID || gy < 0 || gy >= GRID) return;
     vga_fill_rect(OFF_X + gx * CELL, OFF_Y + gy * CELL, CELL, CELL, r, g, b);
 }
 
+/* put_cell: atalho preto/branco (on -> branco, senao preto). Sem retorno. */
 static void put_cell(int gx, int gy, int on) {
     int v = on ? 7 : 0;
     put_cell_rgb(gx, gy, v, v, v);
 }
 
+/* draw_cursor: desenha o bloco do cursor na celula (gx,gy) com a cor dada. Sem retorno. */
 static void draw_cursor(int gx, int gy, int r, int g, int b) {
     int dx, dy;
     for (dy = 0; dy < CURSOR_CELLS; dy++)
@@ -140,6 +171,8 @@ static void draw_cursor(int gx, int gy, int r, int g, int b) {
             put_cell_rgb(gx + dx, gy + dy, r, g, b);
 }
 
+/* restore_block: recebe o estado do desenho (st) e a celula; repinta-a conforme st (e nao a
+ * tela). Sem retorno. IMPORTANTE: e o que apaga o rastro do cursor sem apagar o desenho. */
 static void restore_block(uint8_t st[GRID][GRID], int gx, int gy) {
     int dx, dy;
     for (dy = 0; dy < CURSOR_CELLS; dy++)
@@ -150,6 +183,8 @@ static void restore_block(uint8_t st[GRID][GRID], int gx, int gy) {
         }
 }
 
+/* paint_block: marca como pintada (255) a celula sob o cursor no estado st, apenas se vazia.
+ * Sem retorno. */
 static void paint_block(uint8_t st[GRID][GRID], int gx, int gy) {
     int dx, dy;
     for (dy = 0; dy < CURSOR_CELLS; dy++)
@@ -157,11 +192,13 @@ static void paint_block(uint8_t st[GRID][GRID], int gx, int gy) {
             int cgx = gx + dx, cgy = gy + dy;
             if (cgx < GRID && cgy < GRID && !st[cgy][cgx]) {
                 st[cgy][cgx] = 255;
-                put_cell(cgx, cgy, 1); 
+                put_cell(cgx, cgy, 1);
             }
         }
 }
 
+/* flush_mouse: recebe o fd do mouse e descarta os eventos pendentes (usa modo nao-bloqueante).
+ * Sem retorno. Evita que cliques antigos vazem para um novo desenho. */
 static void flush_mouse(int fd) {
     int fl = fcntl(fd, F_GETFL, 0);
     unsigned char t[64];
@@ -171,38 +208,42 @@ static void flush_mouse(int fd) {
 }
 
 /* ===================== Modo de desenho ===================== */
+
+/* draw_mode: captura um digito desenhado com o mouse e o devolve em out[784]. Retorna 0 em
+ * sucesso ou -1 se o mouse nao abrir. PONTOS IMPORTANTES: a matriz 'state' e a FONTE DA
+ * VERDADE do desenho (a tela e so reflexo); o terminal vai a modo cru para capturar o Enter
+ * (confirmacao); 'select' escuta mouse e teclado juntos; o mouse usa protocolo PS/2 (3 bytes)
+ * e o eixo Y e invertido; o arrasto traca uma linha continua via algoritmo de Bresenham. */
 static int draw_mode(uint8_t out[GRID * GRID]) {
-    static uint8_t state[GRID][GRID];
+    static uint8_t state[GRID][GRID];   /* static: fora da pilha, zerada por chamada */
     unsigned char p[3];
     int fd, cx, cy, gx, gy, ogx, ogy, i, j;
     int was_left = 0;
     const int gmax = GRID - CURSOR_CELLS;
 
-    /* Configura o terminal para leitura instantanea do teclado (tecla Enter) */
     struct termios oldt, newt;
     tcgetattr(STDIN_FILENO, &oldt);
     newt = oldt;
-    newt.c_lflag &= ~(ICANON | ECHO);
+    newt.c_lflag &= ~(ICANON | ECHO);   /* ICANON/ECHO off: le a tecla na hora, sem eco */
     tcsetattr(STDIN_FILENO, TCSANOW, &newt);
 
     fd = open("/dev/input/mice", O_RDONLY);
-    if (fd < 0) { 
-        perror("open /dev/input/mice"); 
-        tcsetattr(STDIN_FILENO, TCSANOW, &oldt); /* restaura terminal se der erro */
-        return -1; 
+    if (fd < 0) {
+        perror("open /dev/input/mice");
+        tcsetattr(STDIN_FILENO, TCSANOW, &oldt);   /* restaura o terminal antes de sair */
+        return -1;
     }
 
     flush_mouse(fd);
-
     memset(state, 0, sizeof(state));
-    vga_clear(0, 0, 0);                 
+    vga_clear(0, 0, 0);
 
     cx = CANVAS / 2; cy = CANVAS / 2;
     gx = cx / CELL; gy = cy / CELL;
     if (gx > gmax) gx = gmax;
     if (gy > gmax) gy = gmax;
     ogx = gx; ogy = gy;
-    draw_cursor(gx, gy, 7, 7, 7);       
+    draw_cursor(gx, gy, 7, 7, 7);
 
     printf("\n[MODO DESENHO]\n");
     printf("  ESQUERDO: pinta 8x8 | MEIO: apagar tudo | ENTER (teclado): confirmar e inferir\n");
@@ -210,39 +251,33 @@ static int draw_mode(uint8_t out[GRID * GRID]) {
     while (1) {
         fd_set fds;
         FD_ZERO(&fds);
-        FD_SET(fd, &fds);            /* Escuta o mouse */
-        FD_SET(STDIN_FILENO, &fds);  /* Escuta o teclado simultaneamente */
-
-        /* Usa o select para bloquear sem gastar CPU ate que algo aconteca em um dos dois */
+        FD_SET(fd, &fds);
+        FD_SET(STDIN_FILENO, &fds);
         if (select(fd + 1, &fds, NULL, NULL, NULL) < 0) break;
 
-        /* Verifica se a interacao veio do teclado */
+        /* Teclado: Enter confirma e encerra o desenho. */
         if (FD_ISSET(STDIN_FILENO, &fds)) {
             char ch;
             if (read(STDIN_FILENO, &ch, 1) == 1) {
-                if (ch == '\n' || ch == '\r') {
-                    printf("\n"); /* quebra a linha visualmente no console */
-                    break;        /* Sai do loop e confirma a inferencia */
-                }
+                if (ch == '\n' || ch == '\r') { printf("\n"); break; }
             }
         }
 
-        /* Verifica se a interacao veio do mouse */
+        /* Mouse: movimento, pintura e apagar. */
         if (FD_ISSET(fd, &fds)) {
             if (read(fd, p, 3) != 3) continue;
-
-            if (!(p[0] & 0x08)) { 
+            if (!(p[0] & 0x08)) {                  /* re-sincroniza pacote PS/2 desalinhado */
                 unsigned char discard;
-                read(fd, &discard, 1); 
-                continue; 
+                read(fd, &discard, 1);
+                continue;
             }
 
-            int dx    = (signed char)p[1];
+            int dx    = (signed char)p[1];          /* deslocamentos com sinal */
             int dy    = (signed char)p[2];
             int left  = p[0] & 0x1;
             int mid   = p[0] & 0x4;
 
-            cx += dx; cy -= dy;
+            cx += dx; cy -= dy;                      /* cy -= dy: inverte o eixo Y */
             if (cx < 0) cx = 0;
             if (cx >= CANVAS) cx = CANVAS - 1;
             if (cy < 0) cy = 0;
@@ -251,7 +286,7 @@ static int draw_mode(uint8_t out[GRID * GRID]) {
             if (gx > gmax) gx = gmax;
             if (gy > gmax) gy = gmax;
 
-            if (mid) {
+            if (mid) {                              /* botao do meio: apaga tudo */
                 memset(state, 0, sizeof(state));
                 vga_fill_rect(OFF_X, OFF_Y, CANVAS, CANVAS, 0, 0, 0);
                 ogx = gx; ogy = gy;
@@ -259,16 +294,15 @@ static int draw_mode(uint8_t out[GRID * GRID]) {
                 continue;
             }
 
-            if (left) {
+            if (left) {                             /* botao esquerdo: pinta */
                 if (!was_left) {
-                    paint_block(state, gx, gy);
-                } else {
+                    paint_block(state, gx, gy);     /* clique unico: um ponto */
+                } else {                            /* arrasto: linha de Bresenham */
                     int x0 = ogx, y0 = ogy;
                     int x1 = gx, y1 = gy;
                     int dx_line = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
                     int dy_line = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
                     int err = dx_line + dy_line, e2;
-
                     while (1) {
                         paint_block(state, x0, y0);
                         if (x0 == x1 && y0 == y1) break;
@@ -280,19 +314,17 @@ static int draw_mode(uint8_t out[GRID * GRID]) {
             }
             was_left = left;
 
-            if (gx != ogx || gy != ogy) {
+            if (gx != ogx || gy != ogy) {           /* apaga o rastro do cursor anterior */
                 restore_block(state, ogx, ogy);
                 ogx = gx; ogy = gy;
             }
-
             draw_cursor(gx, gy, 7, 7, 7);
         }
     }
     close(fd);
-    
-    /* Restaura as definicoes originais do terminal antes de sair */
-    tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
+    tcsetattr(STDIN_FILENO, TCSANOW, &oldt);        /* restaura o terminal original */
 
+    /* Converte a matriz 28x28 para o vetor linear out[784] (ordem linha*28+coluna). */
     for (j = 0; j < GRID; j++)
         for (i = 0; i < GRID; i++)
             out[j * GRID + i] = state[j][i];
@@ -302,6 +334,8 @@ static int draw_mode(uint8_t out[GRID * GRID]) {
 
 /* ===================== Integracao com o coprocessador ===================== */
 
+/* ler_bin: recebe caminho, buffer destino e limite de bytes; le o arquivo binario para o
+ * buffer. Retorna o numero de bytes lidos, ou -1 se nao abrir. (Quem le o disco e o C.) */
 static long ler_bin(const char *caminho, void *dst, long max_bytes) {
     FILE *f = fopen(caminho, "rb");
     long n;
@@ -311,6 +345,9 @@ static long ler_bin(const char *caminho, void *dst, long max_bytes) {
     return n;
 }
 
+/* carregar_modelo: le pesos/beta/bias dos caminhos globais e os envia ao coprocessador.
+ * Sem parametros. Retorna 0 em sucesso ou -1/-2/-3 se algum arquivo tiver tamanho invalido.
+ * Os buffers sao 'static' por serem grandes (pesos ~200 KB) e nao caberem bem na pilha. */
 static int carregar_modelo(void) {
     static uint16_t w[ELM_N_WEIGHTS];
     static uint16_t bt[ELM_N_BETA];
@@ -326,6 +363,9 @@ static int carregar_modelo(void) {
     return 0;
 }
 
+/* carregar_png_28: recebe um caminho de PNG e o buffer de saida (784 bytes); carrega a imagem
+ * em tom de cinza e garante 28x28 (redimensiona por vizinho mais proximo se necessario).
+ * Retorna 0 em sucesso ou -1 se o PNG nao abrir. */
 static int carregar_png_28(const char *caminho, uint8_t out[GRID * GRID]) {
     int w, h, n, x, y;
     unsigned char *data = stbi_load(caminho, &w, &h, &n, 1);
@@ -348,6 +388,9 @@ static int carregar_png_28(const char *caminho, uint8_t out[GRID * GRID]) {
     return 0;
 }
 
+/* inferir: recebe a imagem (784 bytes) e executa o pipeline completo de classificacao
+ * (envia -> START -> espera o resultado -> reseta). Retorna o digito predito (0..9) ou -1 em
+ * falha de envio. O reset ao final limpa o estado de operacao para a proxima inferencia. */
 static int inferir(const uint8_t img[ELM_N_IMG]) {
     int r;
     if (carregar_imagem(img) != ELM_OK) {
@@ -362,6 +405,8 @@ static int inferir(const uint8_t img[ELM_N_IMG]) {
 
 /* ===================== Interface de texto ===================== */
 
+/* read_line: recebe um buffer e seu tamanho; le uma linha do teclado sem o '\n'. Sem retorno.
+ * Linha vazia -> string vazia, o que permite "Enter mantem o valor atual" nos caminhos. */
 static void read_line(char *dst, size_t n) {
     size_t L;
     if (!fgets(dst, (int)n, stdin)) { dst[0] = '\0'; return; }
@@ -369,16 +414,18 @@ static void read_line(char *dst, size_t n) {
     while (L && (dst[L-1] == '\n' || dst[L-1] == '\r')) dst[--L] = '\0';
 }
 
+/* inferir_arquivo: recebe um caminho de PNG; carrega, exibe no monitor, infere e imprime o
+ * digito. Retorna 0 em sucesso ou -1 se o PNG nao carregar. */
 static int inferir_arquivo(const char *caminho) {
     uint8_t img[ELM_N_IMG];
     if (carregar_png_28(caminho, img) != 0) return -1;
-    vga_show_image28(img); 
+    vga_show_image28(img);
     printf(">> DIGITO PREDITO: %d\n", inferir(img));
     return 0;
 }
 
-/* ---- Comandos do menu ---- */
-
+/* enviar_imagem_arquivo (opcao 1): pede o caminho ao usuario, mostra, envia e infere a imagem.
+ * Sem parametros, sem retorno. */
 static void enviar_imagem_arquivo(void) {
     char caminho[256];
     printf("Caminho da imagem PNG: ");
@@ -387,6 +434,8 @@ static void enviar_imagem_arquivo(void) {
     inferir_arquivo(caminho);
 }
 
+/* pedir_caminho_base: recebe um rotulo, o buffer-base e seu tamanho; mostra o caminho atual e
+ * so o substitui se o usuario digitar algo (Enter mantem). Sem retorno. */
 static void pedir_caminho_base(const char *rotulo, char *base, size_t n) {
     char linha[256];
     printf("Caminho do %s (.bin) [%s]: ", rotulo, base);
@@ -394,6 +443,7 @@ static void pedir_caminho_base(const char *rotulo, char *base, size_t n) {
     if (linha[0]) { strncpy(base, linha, n - 1); base[n-1] = '\0'; }
 }
 
+/* enviar_pesos (opcao 2): pede/mantem o caminho, valida o tamanho e envia os pesos. Sem retorno. */
 static void enviar_pesos(void) {
     static uint16_t w[ELM_N_WEIGHTS];
     pedir_caminho_base("pesos", g_path_w, sizeof(g_path_w));
@@ -405,6 +455,7 @@ static void enviar_pesos(void) {
     printf("[+] Pesos enviados (%s).\n", g_path_w);
 }
 
+/* enviar_bias (opcao 3): analogo a enviar_pesos, para o bias. Sem retorno. */
 static void enviar_bias(void) {
     static uint16_t bs[ELM_N_BIAS];
     pedir_caminho_base("bias", g_path_bs, sizeof(g_path_bs));
@@ -416,6 +467,7 @@ static void enviar_bias(void) {
     printf("[+] Bias enviado (%s).\n", g_path_bs);
 }
 
+/* enviar_beta (opcao 4): analogo a enviar_pesos, para o beta. Sem retorno. */
 static void enviar_beta(void) {
     static uint16_t bt[ELM_N_BETA];
     pedir_caminho_base("beta", g_path_bt, sizeof(g_path_bt));
@@ -427,11 +479,14 @@ static void enviar_beta(void) {
     printf("[+] Beta enviado (%s).\n", g_path_bt);
 }
 
+/* cmd_reset (opcao 6): reseta a FPGA manualmente. Sem parametros, sem retorno. */
 static void cmd_reset(void) {
     reiniciar_fpga();
     printf("[+] FPGA resetada.\n");
 }
 
+/* salvar_desenho_png: recebe a imagem 28x28 e a grava como PNG na pasta minhas_imagens, com
+ * nome unico (timestamp + contador). Sem retorno. */
 static void salvar_desenho_png(const uint8_t img[GRID * GRID]) {
     static int seq = 0;
     char caminho[300];
@@ -444,19 +499,19 @@ static void salvar_desenho_png(const uint8_t img[GRID * GRID]) {
         printf("[-] Falha ao salvar o PNG do desenho.\n");
 }
 
+/* modo_desenho (opcao 5): chama o modo de desenho, salva o tracado, envia e infere. Sem
+ * parametros, sem retorno. */
 static void modo_desenho(void) {
     uint8_t img[ELM_N_IMG];
     if (draw_mode(img) != 0) {
         printf("[-] Mouse indisponivel (/dev/input/mice). Rode como root.\n");
         return;
     }
-    
-    salvar_desenho_png(img);                  
-    
-    /* A variavel tratada é despachada diretamente aos buffers da FPGA */
+    salvar_desenho_png(img);
     printf(">> DIGITO PREDITO: %d\n", inferir(img));
 }
 
+/* eh_png: recebe um nome de arquivo; retorna 1 se terminar em ".png" (qualquer caixa), senao 0. */
 static int eh_png(const char *nome) {
     size_t L = strlen(nome);
     if (L < 4) return 0;
@@ -466,6 +521,11 @@ static int eh_png(const char *nome) {
          && (nome[L-1]=='g' || nome[L-1]=='G'));
 }
 
+/* modo_benchmark (opcao 7): pede uma pasta (cujo nome e o rotulo esperado), infere cada PNG
+ * medindo a latencia e, ao final, calcula acuracia, latencia media, desvio e throughput,
+ * gravando tudo em benchmark.csv. Sem parametros, sem retorno.
+ * PONTOS IMPORTANTES: usa CLOCK_MONOTONIC (relogio que so avanca) para a latencia, e acumula
+ * soma e soma dos quadrados para obter media e desvio numa unica passada. */
 static void modo_benchmark(void) {
     char pasta[256];
     char full[600];
@@ -482,6 +542,7 @@ static void modo_benchmark(void) {
     read_line(pasta, sizeof(pasta));
     if (!pasta[0]) return;
 
+    /* Rotulo esperado = primeiro digito do ultimo componente do caminho (nome da pasta). */
     {
         const char *base = pasta, *s;
         for (s = pasta; *s; s++)
@@ -534,6 +595,7 @@ static void modo_benchmark(void) {
         return;
     }
 
+    /* Estatisticas: variancia = E[x^2] - E[x]^2; throughput = 1000*ninf/soma_ms. */
     {
         double media = soma / ninf;
         double var   = soma2 / ninf - media * media;
@@ -563,6 +625,8 @@ static void modo_benchmark(void) {
     }
 }
 
+/* menu: imprime as opcoes e le a escolha do usuario. Sem parametros. Retorna o numero da
+ * opcao, ou -1 se a entrada nao for numerica. */
 static int menu(void) {
     printf("\n==================================================\n");
     printf("        CLASSIFICADOR ELM - DE1-SoC (Marco 3)\n");
@@ -586,6 +650,7 @@ static int menu(void) {
     }
 }
 
+/* uso: recebe o nome do programa e imprime a ajuda das opcoes de linha de comando. Sem retorno. */
 static void uso(const char *prog) {
     printf("Uso: %s [opcoes]\n", prog);
     printf("  -w <arquivo>   caminho dos pesos  (padrao: %s)\n", PATH_WEIGHTS);
@@ -595,6 +660,9 @@ static void uso(const char *prog) {
     printf("  -h             mostra esta ajuda\n");
 }
 
+/* main: ponto de entrada. Faz o parsing dos argumentos (-w/-b/-s/-i/-h), inicializa o MMIO do
+ * coprocessador e do VGA, carrega o modelo e entra no laco do menu. Retorna 0 em saida normal
+ * ou 1 em erro de inicializacao/argumento. */
 int main(int argc, char **argv) {
     int op, i;
     const char *img_cli = NULL;
