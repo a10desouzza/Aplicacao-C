@@ -142,17 +142,9 @@ Com essa arquitetura definida, nosso objetivo era criar uma Aplicação que cone
 
 ```bash
 sudo su
-gcc main.c driver.s -o elm -I. -no-pie -lm
-./elm
+
 ```
-
-- Inferir diretamente uma imagem:
-
-```bash
-./elm -w caminho/pesos.bin -b caminho/beta.bin -s caminho/bias.bin -i imagem.png
-```
-
-O `-lm` é necessário para as funções matemáticas (`sqrt`) usadas pelo benchmark. O `-no-pie` e o `sudo su` seguem a mesma necessidade descrita no Driver: acesso root ao `/dev/mem` e linkagem sem conflito entre o `.c` e o `.s`.
+O `-lm` é necessário para as funções matemáticas (`sqrt`) e o `-lrt` linka a biblioteca de tempo real do POSIX (`librt`), para resolver o `clock_gettime`, usadas pelo benchmark. O `sudo su` seguem a mesma necessidade descrita no Driver: acesso root ao `/dev/mem` e linkagem sem conflito entre o `.c` e o `.s`. O std=c99 indica ao compilador GCC o desejo de usar a linguagem C99 com as extensões da biblioteca GNU.
 
 
 # Testes e Discussões
