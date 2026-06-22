@@ -12,7 +12,7 @@ O programa consiste em um arquivo `.c` (Aplicação principal), um `.h` (Cabeça
    - No nosso projeto, o IP VGA recebe um pixel por vez, contendo as coordenadas `(x, y)` e os valores de cor em RGB de 3 bits cada, em uma única palavra de 32 bits. Após a escrita no registrador de dados, um pulso no registrador de sinais aciona o processamento, e o registrador de status é lido em polling até que o IP sinalize a conclusão.
 
 2. **Protocolo de Pacotes do Pixel VGA**
-   - Para que o IP VGA reconheça e pinte corretamente cada pixel na tela, a palavra de 32 bits precisa ser compactada em um formato específico, definido pela controladora. O compactamento segue a lógica abaixo:
+   - Para o IP VGA reconhecer e pintar corretamente cada pixel na tela, a palavra de 32 bits é compactada em um formato específico, definido pela controladora. O compactamento segue a lógica abaixo:
 
 
    ```c
@@ -123,6 +123,16 @@ Com essa arquitetura definida, nosso objetivo era criar uma Aplicação que cone
      O modo benchmark percorre todas as imagens de uma pasta informada pelo usuário, infere cada um e mede a latência individualmente com `clock_gettime(CLOCK_MONOTONIC)`. O rótulo esperado é o nome da pasta (A pasta tem o caminho do dígito "/5"). Ao final, imprime e salva em `benchmark.csv` as métricas completas: acurácia, latência média, desvio padrão e throughput de imagens por segundo. Embora o formato de saída desse benchmark tenha sido escolha de projeto, as informações que ele contêm foram padrão das outras aplicações, já que passavam por um requisito de conteúdo.
 
 # Manual de Uso
+
+## Requisitos:
+
+   - A Aplicação deve ser compilada em uma máquina com Linux;
+   - É necessário ter, além da aplicação, o Driver e o CoProcessador instalados;
+   - As inferências serão feitas na placa De1-Soc, então tenha ela em mãos e conectada com a máquina;
+   - Conecte um mouse e um monitor VGA à placa;
+   - É necessário acessar à placa em Terminal Remoto para executar a Aplicação;
+
+## Como Executar:
 
 - Faça o download de todo o conteúdo das pastas `data` e `src`;
 - Carregue, na placa De1-SoC, o projeto CoProcessador de Maike;
