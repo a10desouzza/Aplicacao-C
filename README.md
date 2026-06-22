@@ -159,6 +159,13 @@ O `-lm` é necessário para as funções matemáticas (`sqrt`) usadas pelo bench
 | 9        |      1009 |       778 |     231 | 77.1%      |            18.614 |         0.468 |                53.72 | 4 (68 casos)          |
 | Geral    |      9358 |      7777 |    1581 | 83.1%      |            18.62  |         0.255 |                53.71 | —                     |
 
+   - A acurácia do nosso sistema atingiu os mesmos 83% do último marco, o que mostra o uso correto do mesmo driver em ambos.
+
+   - O Dígito que o algoritmo mais acerta é o 1, com 97.4% de acurácia, enquanto o 5, é o que mais erra, com 64.1% de acurácia, sendo que 25% dos erros, é o dígito 3.
+
+   - A latência mantém uma média estável, com um desvio baixíssimo, o que era esperado, já que mesmo que para nós as imagens sejam diferentes, elas possuem os mesmos formatos e pesos.
+
+   - O sistema tem um throughput de 53.71 imagens por segundo.
 
 # Conclusão
 
