@@ -202,3 +202,6 @@ https://github.com/nothings/stb
 
 Algoritmo de Bresenham:
 https://materialpublic.imd.ufrn.br/curso/disciplina/5/69/7/4
+
+Diagrama feito pelo Mermaid AI:
+https://mermaid.ai/web/
