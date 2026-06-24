@@ -45,9 +45,9 @@ O programa consiste em um arquivo `.c` (Aplicação principal), um `.h` (Cabeça
 
 # Metodologia
 
-- **Entradas:** A Aplicação aceita imagens de dois modos distintos: a partir de um arquivo PNG fornecido pelo usuário, ou diretamente do desenho feito com o mouse sobre a tela VGA. Em ambos os casos, a saída desta etapa é um buffer de 784 bytes (`uint8_t img[28*28]`) que é passado ao Driver.
+- **Entradas:** A Aplicação aceita imagens de dois modos distintos: a partir de um arquivo PNG fornecido pelo usuário (Estas que já disponibilizamos com o resto dos arquivos), ou diretamente do desenho feito com o mouse sobre a tela VGA. Em ambos os casos, a saída desta etapa é um vetor escrito em um buffer de 784 bytes (`uint8_t img[28*28]`) que é enviado ao Driver.
 
-- **Saídas:** O dígito predito pelo CoProcessador é exibido no terminal. O VGA exibe a imagem 28×28 ampliada antes da inferência, e em modo de desenho, atualiza a tela em tempo real conforme o usuário pinta.
+- **Saídas:** O dígito predito pelo CoProcessador é exibido no terminal do linux. O VGA exibe a imagem 28×28 ampliada para uma visualização confortável antes da inferência, e em modo de desenho, atualiza a tela em tempo real conforme o usuário pinta.
 
 Com essa arquitetura definida, nosso objetivo era criar uma Aplicação que conectasse esses três sistemas: Driver, CoProcessador e VGA, de forma transparente para o usuário final, com uma interface de menu simples no terminal.
 
@@ -74,7 +74,7 @@ Com essa arquitetura definida, nosso objetivo era criar uma Aplicação que cone
 
      O modo de desenho é a função mais complexa da Aplicação. Ele combina a leitura do mouse via `/dev/input/mice` com a atualização em tempo real do VGA. O cursor é representado visualmente como um bloco branco que se move pela grade 28×28. Quando o botão esquerdo está pressionado, a função `paint_block` marca a célula como branca no estado interno e na tela. Para traços rápidos, onde o mouse percorre múltiplas células entre duas leituras, implementamos, com a biblioteca stb, o algoritmo de linha de Bresenham, que interpola e pinta todas as células intermediárias, para não ficarem fragmentos.
 
-     O botão do meio do mouse limpa o a matriz inteira. O Enter no teclado confirma e encerra o modo de desenho, devolvendo o buffer preenchido.
+     O botão do meio do mouse limpa o a matriz inteira, sendo um botão de "erase". O Enter no teclado confirma e encerra o modo de desenho, devolvendo o buffer preenchido.
 
      O uso de `select` para monitorar tanto o mouse (`/dev/input/mice`) quanto o teclado (`STDIN_FILENO`) ao mesmo tempo foi a solução para evitar que a aplicação ficasse travada esperando o mouse quando o usuário queria pressionar Enter, e vice-versa.
 
